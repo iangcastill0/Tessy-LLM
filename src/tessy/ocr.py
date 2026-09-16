@@ -21,6 +21,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .bundle import bundled_tesseract, subprocess_env
+
 DEFAULT_LANG = "eng"
 # PSM 6 = "assume a single uniform block of text". Licences are laid out as
 # scattered fields, so 11 (sparse text) often wins; we try several and keep the
@@ -139,14 +141,19 @@ class OcrResult:
 def find_tesseract() -> str:
     """Locate the tesseract binary.
 
-    Honours $TESSERACT_BIN so an operator can point at a from-source build that
-    is not first on PATH.
+    Search order: an explicit $TESSERACT_BIN, then a copy shipped inside a
+    frozen app bundle, then PATH. The override comes first so an operator can
+    always point a packaged build at their own Tesseract.
     """
     explicit = os.environ.get("TESSERACT_BIN")
     if explicit:
         if Path(explicit).is_file() and os.access(explicit, os.X_OK):
             return explicit
         raise TesseractNotFound(f"TESSERACT_BIN={explicit!r} is not an executable file")
+
+    packaged = bundled_tesseract()
+    if packaged is not None:
+        return str(packaged)
 
     found = shutil.which("tesseract")
     if not found:
@@ -246,7 +253,14 @@ def run_once(
         str(oem),
         "tsv",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        env=subprocess_env(),
+    )
     if proc.returncode != 0:
         raise TesseractFailed(
             f"tesseract exited {proc.returncode} for {image_path}: {proc.stderr.strip()}"

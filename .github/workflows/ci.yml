@@ -3,11 +3,16 @@ name: CI
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
     inputs:
       build_from_source:
         description: "Also validate the from-source Tesseract build"
+        type: boolean
+        default: false
+      package_app:
+        description: "Build the double-clickable apps for all platforms"
         type: boolean
         default: false
   schedule:
@@ -124,6 +129,87 @@ jobs:
         run: |
           pip install -e ".[dev]"
           pytest -q
+
+  package-app:
+    name: Desktop app (${{ matrix.os }})
+    # PyInstaller cannot cross-compile, so each platform builds on its own
+    # runner. Expensive, so this runs on tags, on request, or when the
+    # packaging inputs themselves change.
+    if: >
+      startsWith(github.ref, 'refs/tags/v') ||
+      inputs.package_app ||
+      github.event_name == 'schedule' ||
+      contains(github.event.head_commit.message, '[package]')
+    needs: [lint, unit]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: Tessy-linux
+            app: dist/tessy
+          - os: macos-latest
+            artifact: Tessy-macos
+            app: dist/Tessy.app/Contents/MacOS/Tessy
+          - os: windows-latest
+            artifact: Tessy-windows
+            app: dist/Tessy.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Tesseract (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-eng \
+            tesseract-ocr-osd python3-tk fonts-liberation
+
+      - name: Install Tesseract (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tesseract
+
+      - name: Install Tesseract (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install --no-progress -y tesseract
+          echo "C:\Program Files\Tesseract-OCR" >> $env:GITHUB_PATH
+
+      - name: Show Tesseract
+        run: |
+          tesseract --version
+          tesseract --list-langs
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" pyinstaller
+
+      - name: Build
+        run: pyinstaller packaging/tessy.spec --noconfirm --distpath dist --workpath build/pyi
+
+      - name: Verify the packaged app
+        # The real gate. A build that produces a file which cannot OCR is worse
+        # than no build: a missing tessdata/configs once made every document
+        # come back empty while the binary still exited 0.
+        run: |
+          "${{ matrix.app }}" --doctor
+          "${{ matrix.app }}" --selftest
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/tessy
+            dist/Tessy.exe
+            dist/Tessy.app
+          if-no-files-found: error
+          retention-days: 30
 
   package:
     name: Build distribution

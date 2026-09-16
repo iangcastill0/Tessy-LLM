@@ -34,6 +34,10 @@ doctor: ## Check that tesseract and the Python deps are wired up
 gui: ## Launch the desktop application
 	$(BIN)/tessy-gui $(DB)
 
+.PHONY: app
+app: ## Build the double-clickable desktop app for this platform
+	./scripts/build_app.sh
+
 .PHONY: test
 test: ## Run the full test suite (desktop tests need a display)
 	$(BIN)/pytest -q

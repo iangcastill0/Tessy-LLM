@@ -37,10 +37,15 @@ case.xlsx ──▶ ingest ──▶ preprocess ──▶ Tesseract OCR ──�
 
 ![Tessy desktop app](docs/screenshot.png)
 
+Run it from a checkout:
+
 ```bash
 make gui                      # or: .venv/bin/tessy-gui
 .venv/bin/tessy-gui path/to/case.db
 ```
+
+...or build a **double-clickable app** that needs nothing installed — see
+[Packaging](#packaging-a-double-clickable-app) below.
 
 The window is built around the thing a terminal cannot do: showing the licence
 image beside the fields read off it. In the screenshot the image reads
@@ -128,6 +133,41 @@ make gui
 .venv/bin/tessy export --db data/output/case.db -o extracted.csv
 ```
 
+### Packaging a double-clickable app
+
+```bash
+make app        # -> dist/Tessy.app (macOS), dist/Tessy.exe (Windows), dist/tessy (Linux)
+```
+
+The result is self-contained: **Tesseract, its language data and Python are all
+inside**. Hand the file to someone with nothing installed and it runs. Roughly
+135 MB, which is the price of not asking an investigator to build Tesseract.
+
+PyInstaller cannot cross-compile, so each platform must be built on itself. CI
+does all three on native runners — `workflow_dispatch`, a `v*` tag, or a commit
+message containing `[package]` — and uploads them as artifacts.
+
+Two flags matter on a packaged app, because the machine running it may have no
+terminal-savvy owner:
+
+```bash
+Tessy --doctor     # what it found: bundled Tesseract, languages, tkinter
+Tessy --selftest   # renders text, OCRs it, checks it round-trips
+```
+
+`--selftest` is the one to ask for when someone reports "it doesn't work". It is
+also the CI gate: a build that produces a file which cannot OCR is worse than no
+build at all. That gate has already earned its place — an early build shipped
+the language models but not `tessdata/configs`, so Tesseract silently ignored
+the TSV request, emitted plain text, exited 0, and every document came back
+empty at 0.0 confidence.
+
+To build against the operator's own Tesseract instead of bundling one:
+
+```bash
+TESSY_BUNDLE_TESSERACT=0 make app
+```
+
 ---
 
 ## Spreadsheet layout
@@ -169,6 +209,8 @@ Rules:
 | `tessy stats --db DB` | Index summary |
 | `tessy export --db DB` | Export extracted fields as CSV or JSON |
 | `tessy-gui [DB]` | Launch the desktop app |
+| `tessy-gui --doctor` | Diagnostics, no window (works on a packaged app) |
+| `tessy-gui --selftest` | Prove OCR works end to end |
 
 ---
 
@@ -233,6 +275,7 @@ make coverage       # with a coverage report
 make lint           # ruff
 make format         # auto-format
 make gui            # launch the desktop app
+make app            # build the double-clickable app
 ```
 
 The suite splits three ways: parsing, indexing, spreadsheet reading and the

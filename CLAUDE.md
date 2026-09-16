@@ -30,7 +30,11 @@ src/tessy/
   pipeline.py    orchestration
   cli.py         argparse CLI
   gui/jobs.py    threaded job runner for the desktop app; NO tkinter import
-  gui/app.py     tkinter window
+  gui/app.py     tkinter window; also --doctor / --selftest entry points
+  bundle.py      locating Tesseract and tessdata inside a frozen app
+packaging/tessy.spec    PyInstaller spec (macOS .app / Windows .exe / Linux binary)
+packaging/launcher.py   frozen entry point
+scripts/build_app.sh    builds and verifies the double-clickable app
 scripts/build_tesseract.sh   from-source Tesseract build + language data
 ```
 
@@ -78,6 +82,29 @@ scripts/build_tesseract.sh   from-source Tesseract build + language data
 - Never touch widgets from the worker thread - events go through the queue and
   are applied on the UI thread by `_poll_job`.
 
+### Packaging
+
+- **Bundle `tessdata/configs`, not just `*.traineddata`.** Asking Tesseract for
+  `tsv` output without `configs/tsv` does not fail: it silently emits plain
+  text and exits 0, the TSV parser finds no words, and every document comes
+  back empty at 0.0 confidence. This shipped once and was only caught by
+  running the packaged artefact.
+- **The PyInstaller entry point is `packaging/launcher.py`, never
+  `gui/app.py`.** PyInstaller runs the entry script as `__main__`, which has no
+  parent package, so the package's relative imports fail at startup.
+- **`TESSDATA_PREFIX` must name the tessdata directory itself**, not its
+  parent. Naming the parent makes Tesseract 5 report a language called
+  `tessdata/eng`, which never matches `-l eng`.
+- A bundled Tesseract needs `LD_LIBRARY_PATH` pointing at its own bundled libs,
+  or it picks up the host's `libtesseract`/`liblept`.
+- `$TESSERACT_BIN` always beats the bundled copy: an operator pointing at their
+  own build must win.
+- **Always verify the artefact, never just the build.** `scripts/build_app.sh`
+  and CI both run `--doctor` and `--selftest` on the result; a build that
+  produces a file which cannot OCR is worse than no build.
+- PyInstaller cannot cross-compile. macOS `.app` builds on macOS, Windows
+  `.exe` on Windows. CI does all three on native runners.
+
 ## Working here
 
 ```bash
@@ -86,6 +113,7 @@ make test          # full suite (needs tesseract; GUI tests need a display)
 make test-unit     # only the tesseract-free tests
 make test-gui      # full suite under xvfb (headless Linux)
 make gui           # launch the desktop app
+make app           # build the double-clickable app (verifies it too)
 make lint          # ruff check
 make format        # ruff format + autofix
 ```

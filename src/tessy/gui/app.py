@@ -574,9 +574,134 @@ def _warnings_of(doc: dict) -> list[str]:
         return []
 
 
+DOCTOR_HELP = """Tessy desktop app
+
+Usage:
+  Tessy [INDEX.db]     open the app, optionally on a specific index
+  Tessy --doctor       print diagnostics and exit (no window)
+  Tessy --selftest     prove OCR actually works end to end, and exit
+  Tessy --version      print the version and exit
+"""
+
+SELFTEST_TEXT = "TESSY SELFTEST 12345"
+
+
+def run_doctor() -> int:
+    """Print diagnostics without opening a window.
+
+    Exists mainly for the packaged app: when something is wrong on a machine we
+    cannot inspect, this is the one command that can be asked for over a phone.
+    """
+    from ..bundle import describe
+    from ..ocr import TesseractNotFound, available_languages, find_tesseract, tesseract_version
+
+    print(f"Tessy {__version__}")
+    for key, value in describe().items():
+        print(f"  {key:<18}: {value or '-'}")
+
+    try:
+        print(f"  tesseract binary  : {find_tesseract()}")
+        print(f"  tesseract version : {tesseract_version()}")
+        langs = available_languages()
+        print(f"  languages         : {', '.join(langs) if langs else 'NONE'}")
+        if not langs:
+            print("\nNo language data: OCR will fail. Reinstall or set TESSDATA_PREFIX.")
+            return 1
+    except TesseractNotFound as exc:
+        print(f"  tesseract         : NOT FOUND ({exc})")
+        return 1
+
+    try:
+        import tkinter
+
+        print(f"  tkinter           : {tkinter.TkVersion}")
+    except ImportError:
+        print("  tkinter           : MISSING")
+        return 1
+
+    print("\nAll checks passed.")
+    return 0
+
+
+def run_selftest() -> int:
+    """Render text, OCR it, and check it comes back.
+
+    `--doctor` only proves the pieces are present. This proves they work
+    together: in a packaged app it exercises the bundled Tesseract, the bundled
+    language data and the bundled Pillow in one go, on a machine where nothing
+    else is installed.
+    """
+    import os
+    import tempfile
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    from ..ocr import run_best
+
+    # Set TESSY_SELFTEST_DIR to keep the probe image for inspection when
+    # diagnosing a packaged build.
+    keep_dir = os.environ.get("TESSY_SELFTEST_DIR")
+
+    font = None
+    for path in (
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+    ):
+        try:
+            font = ImageFont.truetype(path, 56)
+            break
+        except (OSError, ImportError):
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+        print("  font     : WARNING - no TrueType font found, using the bitmap default")
+    else:
+        print(f"  font     : {getattr(font, 'path', '(default)')}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(keep_dir or tmp) / "selftest.png"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (760, 130), "white")
+        ImageDraw.Draw(image).text((20, 30), SELFTEST_TEXT, font=font, fill="black")
+        image.save(probe)
+
+        try:
+            result = run_best(probe)
+        except Exception as exc:  # noqa: BLE001 - the whole point is to report it
+            print(f"SELFTEST FAILED: OCR raised {exc.__class__.__name__}: {exc}")
+            return 1
+
+    got = " ".join(result.text.split())
+    print(f"  rendered : {SELFTEST_TEXT}")
+    print(f"  OCR read : {got}")
+    print(f"  psm      : {result.psm}   confidence: {result.mean_confidence:.1f}")
+
+    if got.upper() != SELFTEST_TEXT:
+        print("\nSELFTEST FAILED: the text did not round-trip exactly.")
+        return 1
+    print("\nSelf-test passed: OCR is working.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the `tessy-gui` command."""
     argv = list(sys.argv[1:] if argv is None else argv)
+
+    if "--doctor" in argv:
+        return run_doctor()
+    if "--selftest" in argv:
+        return run_selftest()
+    if "--version" in argv:
+        print(f"tessy {__version__}")
+        return 0
+    if {"-h", "--help"} & set(argv):
+        print(DOCTOR_HELP)
+        return 0
+
     db = argv[0] if argv else "data/output/case_index.db"
 
     root = tk.Tk()
