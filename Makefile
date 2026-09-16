@@ -30,9 +30,17 @@ tesseract: ## Build and install Tesseract from source
 doctor: ## Check that tesseract and the Python deps are wired up
 	$(BIN)/tessy doctor
 
+.PHONY: gui
+gui: ## Launch the desktop application
+	$(BIN)/tessy-gui $(DB)
+
 .PHONY: test
-test: ## Run the full test suite
+test: ## Run the full test suite (desktop tests need a display)
 	$(BIN)/pytest -q
+
+.PHONY: test-gui
+test-gui: ## Run the suite with a virtual display (Linux headless)
+	xvfb-run -a $(BIN)/pytest -q
 
 .PHONY: test-unit
 test-unit: ## Run only the tests that do not need tesseract

@@ -33,6 +33,42 @@ case.xlsx ──▶ ingest ──▶ preprocess ──▶ Tesseract OCR ──�
 
 ---
 
+## Desktop app
+
+![Tessy desktop app](docs/screenshot.png)
+
+```bash
+make gui                      # or: .venv/bin/tessy-gui
+.venv/bin/tessy-gui path/to/case.db
+```
+
+The window is built around the thing a terminal cannot do: showing the licence
+image beside the fields read off it. In the screenshot the image reads
+`I1234562` while the extracted field says `11234562` — the examiner sees the
+misread immediately, with the warning directly above it.
+
+- **Open spreadsheet → Run OCR** — runs in the background with a progress bar
+  and a working **Stop** button. Stopping keeps whatever was already indexed.
+- **Search** — the same full-text search as the CLI, including the
+  confusion-folded licence-number matching.
+- **Needs review** — filters to flagged records, worst first. Flagged rows are
+  tinted in the list, and their warnings appear above the fields.
+- **File → Export CSV** — the extracted fields for the whole index.
+
+It uses Tkinter, which ships with Python and opens **no socket and no server** —
+for tooling that handles identity documents, having nothing listening is the
+point. On most Linux distributions Tkinter is packaged separately:
+
+```bash
+sudo apt install python3-tk      # Debian/Ubuntu
+sudo dnf install python3-tkinter # Fedora
+```
+
+macOS and Windows builds from python.org already include it. The app tells you
+exactly this if it is missing.
+
+---
+
 ## Quick start
 
 ### 1. Build Tesseract
@@ -74,7 +110,10 @@ Python dependencies. Fix anything it flags before going further.
 ### 3. Run it
 
 ```bash
-# Drop your spreadsheet in, then:
+# Drop your spreadsheet in, then either launch the desktop app:
+make gui
+
+# ...or use the CLI:
 .venv/bin/tessy ingest data/input/case.xlsx --db data/output/case.db
 
 # Search it
@@ -129,6 +168,7 @@ Rules:
 | `tessy review --db DB` | List documents needing a human check |
 | `tessy stats --db DB` | Index summary |
 | `tessy export --db DB` | Export extracted fields as CSV or JSON |
+| `tessy-gui [DB]` | Launch the desktop app |
 
 ---
 
@@ -188,18 +228,23 @@ Driver's licences are personal data; treat the working directory as evidence.
 make install-dev    # set up the venv
 make test           # full suite
 make test-unit      # only tests that don't need Tesseract
+make test-gui       # full suite under a virtual display (headless Linux)
 make coverage       # with a coverage report
 make lint           # ruff
 make format         # auto-format
+make gui            # launch the desktop app
 ```
 
-The suite splits in two: parsing, indexing and spreadsheet reading are pure
-Python and run anywhere, while tests needing the binary are marked
-`requires_tesseract` and skip cleanly when it's absent.
+The suite splits three ways: parsing, indexing, spreadsheet reading and the
+desktop app's job runner are pure Python and run anywhere; tests needing the
+binary are marked `requires_tesseract`; and the tkinter window tests are marked
+`requires_display`. Both skip cleanly when unavailable, so a partial environment
+still gives a useful run. Use `make test-gui` (xvfb) to exercise the window on a
+headless Linux box.
 
 CI (`.github/workflows/ci.yml`) runs lint, the tesseract-free unit tests across
-Python 3.10–3.12, the full suite against a packaged Tesseract, and a packaging
-job. The from-source build script is exercised weekly, on demand, or when a
+Python 3.10–3.12, the full suite (including the desktop tests, under xvfb)
+against a packaged Tesseract, and a packaging job. The from-source build script is exercised weekly, on demand, or when a
 commit message contains `[build-tesseract]` — it's too slow for every push but
 too important to leave untested.
 
@@ -222,6 +267,10 @@ Install the Leptonica headers: `libleptonica-dev` (Debian/Ubuntu),
 
 **`… is not a readable .xlsx file`**
 Legacy `.xls` isn't supported. Re-save as `.xlsx`.
+
+**`Tessy's desktop app needs tkinter`**
+Install it: `sudo apt install python3-tk` (Debian/Ubuntu) or
+`sudo dnf install python3-tkinter` (Fedora). The CLI works without it.
 
 **Poor OCR on every image**
 Check the scan resolution first, then try `--psm 11` (scattered fields) or

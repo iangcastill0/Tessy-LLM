@@ -20,6 +20,9 @@ dev = [
 [project.scripts]
 tessy = "tessy.cli:main"
 
+[project.gui-scripts]
+tessy-gui = "tessy.gui.app:main"
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -33,6 +36,7 @@ pythonpath = ["src"]
 addopts = "-ra --strict-markers"
 markers = [
     "requires_tesseract: test needs the tesseract binary on PATH",
+    "requires_display: test needs tkinter and a usable display (use xvfb-run in CI)",
 ]
 
 [tool.ruff]

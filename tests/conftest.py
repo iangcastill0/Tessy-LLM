@@ -33,7 +33,24 @@ def _tesseract_available() -> bool:
         return False
 
 
+def _display_available() -> bool:
+    """True when a Tk window can actually be created here."""
+    import os
+
+    if not os.environ.get("DISPLAY") and sys.platform.startswith("linux"):
+        return False
+    try:
+        import tkinter
+
+        root = tkinter.Tk()
+        root.destroy()
+        return True
+    except Exception:
+        return False
+
+
 HAVE_TESSERACT = _tesseract_available()
+HAVE_DISPLAY = _display_available()
 
 requires_tesseract = pytest.mark.skipif(
     not HAVE_TESSERACT,
@@ -43,12 +60,17 @@ requires_tesseract = pytest.mark.skipif(
 
 def pytest_collection_modifyitems(config, items):
     """Auto-skip anything marked requires_tesseract when the binary is missing."""
-    if HAVE_TESSERACT:
-        return
-    skip = pytest.mark.skip(reason="tesseract not available")
-    for item in items:
-        if "requires_tesseract" in item.keywords:
-            item.add_marker(skip)
+    if not HAVE_TESSERACT:
+        skip = pytest.mark.skip(reason="tesseract not available")
+        for item in items:
+            if "requires_tesseract" in item.keywords:
+                item.add_marker(skip)
+
+    if not HAVE_DISPLAY:
+        skip = pytest.mark.skip(reason="no tkinter/display; run under xvfb-run")
+        for item in items:
+            if "requires_display" in item.keywords:
+                item.add_marker(skip)
 
 
 @pytest.fixture

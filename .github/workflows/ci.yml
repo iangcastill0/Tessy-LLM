@@ -54,9 +54,10 @@ jobs:
       - name: Install package
         run: pip install -e ".[dev]"
       - name: Run tests
-        # Tesseract is deliberately absent here: this proves the tesseract-free
-        # units (parsing, indexing, ingest) stay independent of the binary, and
-        # that the suite skips rather than fails without it.
+        # Neither tesseract nor a display is present here: this proves the
+        # tesseract-free units (parsing, indexing, ingest, and the GUI's job
+        # runner) stay independent of both, and that the suite skips rather
+        # than fails without them.
         run: pytest -q -m "not requires_tesseract" --cov=tessy --cov-report=xml
 
   integration:
@@ -68,18 +69,33 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install tesseract
+      - name: Install tesseract and desktop test deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-eng fonts-liberation
+          sudo apt-get install -y -qq \
+            tesseract-ocr tesseract-ocr-eng fonts-liberation \
+            python3-tk xvfb
       - name: Show tesseract version
         run: tesseract --version && tesseract --list-langs
       - name: Install package
         run: pip install -e ".[dev]"
       - name: Run full suite
-        run: pytest -q --cov=tessy --cov-report=term-missing
+        # xvfb-run supplies a display so the tkinter tests run instead of
+        # skipping; without it the desktop app would only ever be lint-checked.
+        run: xvfb-run -a pytest -q --cov=tessy --cov-report=term-missing
       - name: Smoke-test the CLI
         run: tessy doctor
+      - name: Smoke-test the desktop app launches
+        run: |
+          xvfb-run -a python - <<'PY'
+          import tkinter as tk
+          from tessy.gui.app import TessyApp
+          root = tk.Tk(); root.withdraw()
+          app = TessyApp(root, db_path="ci-smoke.db")
+          assert app.tree is not None
+          root.destroy()
+          print("desktop app constructed and torn down cleanly")
+          PY
 
   build-from-source:
     name: Build tesseract from source

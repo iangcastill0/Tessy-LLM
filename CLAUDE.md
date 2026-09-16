@@ -29,6 +29,8 @@ src/tessy/
   index.py       SQLite FTS5 index and search
   pipeline.py    orchestration
   cli.py         argparse CLI
+  gui/jobs.py    threaded job runner for the desktop app; NO tkinter import
+  gui/app.py     tkinter window
 scripts/build_tesseract.sh   from-source Tesseract build + language data
 ```
 
@@ -56,22 +58,46 @@ scripts/build_tesseract.sh   from-source Tesseract build + language data
   poison `mean_confidence`, and make a bad document invisible to the
   low-confidence review filter.
 
+### Desktop app
+
+- **Keep `gui/jobs.py` free of tkinter.** It holds the threading and event
+  plumbing so that logic is testable without a display. Widgets belong in
+  `gui/app.py`.
+- **Tkinter is the choice on purpose**: stdlib, no socket, no server, no extra
+  runtime. Do not replace it with a local web server or Electron - "nothing is
+  listening" is a security property for tooling that handles identity documents.
+- **Poll worker events by sampling `running` *before* draining the queue.** The
+  other order loses a race: the thread can finish between the drain and the
+  check, and its `Finished` event is then never processed, leaving the window
+  stuck on "working" forever.
+- **Keep a reference to `ImageTk.PhotoImage`** (`self._preview_image`). Tkinter
+  holds only a weak reference; a dropped one renders as a blank box.
+- **`refresh()` writes to the status label**, so anything that wants a message
+  to survive (like a run summary) must call `set_status` *after* `refresh`, not
+  before.
+- Never touch widgets from the worker thread - events go through the queue and
+  are applied on the UI thread by `_poll_job`.
+
 ## Working here
 
 ```bash
 make install-dev
-make test          # full suite (needs tesseract)
+make test          # full suite (needs tesseract; GUI tests need a display)
 make test-unit     # only the tesseract-free tests
+make test-gui      # full suite under xvfb (headless Linux)
+make gui           # launch the desktop app
 make lint          # ruff check
 make format        # ruff format + autofix
 ```
 
-Tests needing the binary are marked `requires_tesseract` and skip when it is
-absent. Keep parsing, indexing and ingest logic free of that dependency so they
-stay fast and runnable anywhere.
+Tests needing the binary are marked `requires_tesseract`; tkinter window tests
+are marked `requires_display`. Both skip when unavailable. Keep parsing,
+indexing, ingest and `gui/jobs.py` free of those dependencies so they stay fast
+and runnable anywhere.
 
 CI runs lint, format check, unit tests on Python 3.10–3.12, the full suite
-against a packaged Tesseract, and a packaging job. `ruff format --check` is
+(desktop tests included, under xvfb) against a packaged Tesseract, and a
+packaging job. `ruff format --check` is
 enforced — run `make format` before pushing.
 
 ## Conventions

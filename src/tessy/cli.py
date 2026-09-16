@@ -130,6 +130,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     from .pipeline import process_spreadsheet
 
     psms = tuple(args.psm) if args.psm else DEFAULT_PSMS
+
+    def show(done: int, total: int, label: str) -> None:
+        print(f"  [{done}/{total}] {label}", flush=True)
+
     report = process_spreadsheet(
         args.spreadsheet,
         args.db,
@@ -139,7 +143,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         lang=args.lang,
         psms=psms,
         do_preprocess=not args.no_preprocess,
-        progress=not args.quiet,
+        on_progress=None if args.quiet else show,
     )
     print()
     print(report.summary())
