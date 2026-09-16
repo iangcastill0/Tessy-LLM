@@ -454,6 +454,18 @@ def _add_warnings(result: LicenceFields) -> None:
             "licence_no is all digits; leading letters are commonly misread "
             "(I->1, O->0) - verify against the image"
         )
+    # A name carrying digits almost always means an adjacent label was misread
+    # and its value got swept into the name. The raw value is kept rather than
+    # trimmed - guessing where the name ends risks discarding a real one - but
+    # the operator is told to look.
+    for label in ("first_name", "last_name"):
+        value = getattr(result, label)
+        if value and any(ch.isdigit() for ch in value):
+            result.warnings.append(
+                f"{label} contains digits ({value!r}); an adjacent field was "
+                "probably misread into it - verify against the image"
+            )
+
     if not result.licence_no:
         result.warnings.append("no licence number found")
     if not result.dob:

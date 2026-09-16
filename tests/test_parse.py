@@ -173,3 +173,22 @@ class TestParseLicence:
         assert data["full_name"] == "ALEXANDER J CARDHOLDER"
         assert data["licence_no_folded"] == fold_confusables("11234562")
         assert isinstance(data["warnings"], list)
+
+
+class TestNameSanityWarnings:
+    """A misread label swept into a name field must be surfaced, not trusted."""
+
+    def test_digits_in_name_are_flagged(self):
+        # Observed on a degraded fax: the HGT label was misread and its value
+        # ran into the first name.
+        parsed = parse_licence(["FN ERIK HCY 5-08", "LN HALVORSEN", "DL N7781203"])
+        assert any("first_name contains digits" in w for w in parsed.warnings)
+
+    def test_clean_names_are_not_flagged(self):
+        parsed = parse_licence(["FN ALEXANDER J", "LN CARDHOLDER", "DL A1234567"])
+        assert not any("contains digits" in w for w in parsed.warnings)
+
+    def test_value_is_preserved_not_trimmed(self):
+        # Trimming risks discarding a real name; keep it and warn instead.
+        parsed = parse_licence(["FN ERIK HCY 5-08"])
+        assert parsed.first_name == "ERIK HCY 5-08"
