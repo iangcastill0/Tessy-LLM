@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# CASE DATA — never commit. Driver's licences are PII.
+# ---------------------------------------------------------------------------
+data/
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+!tests/**/*.xlsx
+!docs/**/*.csv
+
+# Extracted artefacts
+out/
+output/
+*.ocr.txt
+*.hocr
+*.tsv
+
+# ---------------------------------------------------------------------------
+# Vendored / built third-party sources (Tesseract is built out-of-tree)
+# ---------------------------------------------------------------------------
+.build/
+vendor/
+third_party/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
