@@ -150,12 +150,19 @@ jobs:
           - os: ubuntu-latest
             artifact: Tessy-linux
             app: dist/tessy
+            upload: dist/tessy
           - os: macos-latest
             artifact: Tessy-macos
             app: dist/Tessy.app/Contents/MacOS/Tessy
+            # Only the .app. A glob would also match PyInstaller's intermediate
+            # COLLECT directory (dist/Tessy), which macOS matches
+            # case-insensitively against dist/tessy and which doubles the
+            # download for no benefit.
+            upload: dist/Tessy.app
           - os: windows-latest
             artifact: Tessy-windows
             app: dist/Tessy.exe
+            upload: dist/Tessy.exe
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -204,10 +211,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            dist/tessy
-            dist/Tessy.exe
-            dist/Tessy.app
+          path: ${{ matrix.upload }}
           if-no-files-found: error
           retention-days: 30
 

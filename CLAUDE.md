@@ -104,6 +104,21 @@ scripts/build_tesseract.sh   from-source Tesseract build + language data
   produces a file which cannot OCR is worse than no build.
 - PyInstaller cannot cross-compile. macOS `.app` builds on macOS, Windows
   `.exe` on Windows. CI does all three on native runners.
+- **`shared_libs_of` only walks direct dependencies**, and `otool -L` reports
+  far fewer than `ldd` (3 vs 51 for the same Tesseract). That is not a bug to
+  "fix" by hand: PyInstaller recursively analyses binaries passed in
+  `binaries=` and collects the transitive closure itself. Verified on the macOS
+  artefact - all 19 Mach-O files resolve inside the bundle, because Homebrew's
+  libleptonica carries an `@loader_path/..` rpath which, from
+  `Contents/Frameworks/tesseract/`, lands on `Contents/Frameworks/`. Moving the
+  bundled binary to another depth would break that.
+- CI upload paths are per-platform. A glob listing all three also matches
+  PyInstaller's intermediate COLLECT directory (`dist/Tessy`), which macOS
+  matches case-insensitively against `dist/tessy`, doubling the artefact.
+- `actions/upload-artifact` dereferences symlinks, so a downloaded `.app` is
+  about twice the size PyInstaller produced. It still runs.
+- The macOS artefact is arm64-only (`macos-latest` is Apple Silicon) and
+  unsigned, so Gatekeeper blocks the first launch.
 
 ## Working here
 

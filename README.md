@@ -162,6 +162,25 @@ the language models but not `tessdata/configs`, so Tesseract silently ignored
 the TSV request, emitted plain text, exited 0, and every document came back
 empty at 0.0 confidence.
 
+#### Running the macOS app
+
+The `.app` is **unsigned**, so Gatekeeper blocks a plain double-click the first
+time. Either right-click the app and choose **Open** (then confirm), or:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Tessy.app
+```
+
+CI's `macos-latest` runner is **Apple Silicon**, so the artefact it publishes is
+arm64-only and will not launch on an Intel Mac. For Intel, build on an Intel Mac
+with `make app`, or add an `x86_64` runner to the matrix.
+
+Confirm a downloaded build before trusting it:
+
+```bash
+/Applications/Tessy.app/Contents/MacOS/Tessy --selftest
+```
+
 To build against the operator's own Tesseract instead of bundling one:
 
 ```bash
