@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tessy.index import TessyIndex
@@ -203,3 +205,99 @@ class TestReporting:
             )
         with TessyIndex(path) as reopened:
             assert len(reopened.search("PERSISTED")) == 1
+
+
+class TestFieldUpdates:
+    def test_update_fields_corrects_licence_and_fts(self, index):
+        doc_id = index.search("CARDHOLDER")[0].id
+        updated = index.update_fields(doc_id, {"licence_no": "I1234562"})
+        assert updated["licence_no"] == "I1234562"
+        assert updated["licence_no_folded"] == fold_confusables("I1234562")
+        assert updated["reviewed_at"]
+        # All-digit warning should drop once the leading letter is restored.
+        assert "all digits" not in " ".join(json.loads(updated["warnings"]))
+        assert index.search("I1234562")[0].id == doc_id
+        # Folding still lets the old all-digit spelling find the corrected record.
+        assert index.search("11234562")[0].id == doc_id
+        assert index.get(doc_id)["licence_no"] == "I1234562"
+
+    def test_update_fields_rebuilds_full_name_when_blank(self, index):
+        doc_id = index.search("RIVERA")[0].id
+        updated = index.update_fields(
+            doc_id, {"last_name": "RIVERA-SMITH", "first_name": "MARIA L", "full_name": ""}
+        )
+        assert updated["full_name"] == "MARIA L RIVERA-SMITH"
+        assert index.search("RIVERA-SMITH")[0].id == doc_id
+
+    def test_mark_reviewed_excludes_from_review_queue(self, index):
+        before = {d["id"] for d in index.needs_review()}
+        assert before
+        for doc_id in before:
+            index.mark_reviewed(doc_id)
+        assert index.needs_review() == []
+
+    def test_update_unknown_id_returns_none(self, index):
+        assert index.update_fields(99999, {"licence_no": "X"}) is None
+
+    def test_reviewed_at_migrates_on_old_databases(self, tmp_path):
+        """A v1 database without reviewed_at still opens and accepts corrections."""
+        import sqlite3
+
+        path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE documents (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL,
+                sheet TEXT NOT NULL,
+                row INTEGER NOT NULL,
+                image_path TEXT,
+                image_origin TEXT,
+                ocr_text TEXT NOT NULL DEFAULT '',
+                ocr_confidence REAL,
+                ocr_psm INTEGER,
+                sheet_text TEXT NOT NULL DEFAULT '',
+                licence_no TEXT,
+                licence_no_folded TEXT,
+                last_name TEXT,
+                first_name TEXT,
+                full_name TEXT,
+                dob TEXT,
+                expiry TEXT,
+                issued TEXT,
+                sex TEXT,
+                height TEXT,
+                weight TEXT,
+                eyes TEXT,
+                hair TEXT,
+                licence_class TEXT,
+                address TEXT,
+                jurisdiction TEXT,
+                document_type TEXT,
+                completeness REAL,
+                warnings TEXT,
+                indexed_at TEXT NOT NULL,
+                UNIQUE(source, sheet, row, image_path)
+            );
+            CREATE VIRTUAL TABLE documents_fts USING fts5(
+                ocr_text, sheet_text, full_name, licence_no, licence_no_folded,
+                address, jurisdiction,
+                content='documents', content_rowid='id'
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO documents(source, sheet, row, image_path, ocr_text, "
+            "full_name, licence_no, warnings, indexed_at) "
+            "VALUES ('s.xlsx','S',1,NULL,'','LEGACY','11234562','[]','2020-01-01T00:00:00+00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        with TessyIndex(path) as idx:
+            doc = idx.all_documents()[0]
+            assert "reviewed_at" in doc
+            updated = idx.update_fields(doc["id"], {"licence_no": "I1234562"})
+            assert updated["reviewed_at"]

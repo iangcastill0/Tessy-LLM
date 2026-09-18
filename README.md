@@ -52,13 +52,28 @@ image beside the fields read off it. In the screenshot the image reads
 `I1234562` while the extracted field says `11234562` — the examiner sees the
 misread immediately, with the warning directly above it.
 
-- **Open spreadsheet → Run OCR** — runs in the background with a progress bar
-  and a working **Stop** button. Stopping keeps whatever was already indexed.
+Two ways to feed it licences:
+
+1. **Open spreadsheet → Run OCR** — case workbook with embedded images or a
+   path column. Runs in the background with a progress bar and a working
+   **Stop** button. Stopping keeps whatever was already indexed.
+2. **Open DL folder → Run OCR** — a directory of licence images **named by
+   verified DL#** (`I1234562.png`, `T4459981_front.jpg`, …). Tessy OCRs each
+   file, uses the filename as the authoritative licence number, and offers to
+   write an Excel spreadsheet with one row per card when the run finishes.
+
+Also:
+
 - **Search** — the same full-text search as the CLI, including the
   confusion-folded licence-number matching.
 - **Needs review** — filters to flagged records, worst first. Flagged rows are
   tinted in the list, and their warnings appear above the fields.
-- **File → Export CSV** — the extracted fields for the whole index.
+- **Correct by eye** — edit any extracted field next to the image, then
+  **Save corrections** (writes back to the index and marks the record
+  reviewed) or **Mark reviewed** to accept the OCR as-is. Reviewed records
+  leave the review queue.
+- **File → Export spreadsheet… / Export CSV…** — the extracted fields for the
+  whole index (`.xlsx` is the operator-facing workbook).
 
 It uses Tkinter, which ships with Python and opens **no socket and no server** —
 for tooling that handles identity documents, having nothing listening is the
@@ -121,6 +136,10 @@ make gui
 # ...or use the CLI:
 .venv/bin/tessy ingest data/input/case.xlsx --db data/output/case.db
 
+# Or: a folder of images named by verified DL# → index + spreadsheet
+.venv/bin/tessy folder data/input/scans --db data/output/case.db \
+    -o data/output/licences.xlsx
+
 # Search it
 .venv/bin/tessy search "SMITH"           --db data/output/case.db
 .venv/bin/tessy search I1234562          --db data/output/case.db
@@ -130,7 +149,7 @@ make gui
 .venv/bin/tessy review --db data/output/case.db
 
 # Get the extracted fields back out
-.venv/bin/tessy export --db data/output/case.db -o extracted.csv
+.venv/bin/tessy export --db data/output/case.db --format xlsx -o extracted.xlsx
 ```
 
 ### Packaging a double-clickable app
@@ -222,11 +241,12 @@ Rules:
 |---------|---------|
 | `tessy doctor` | Check the Tesseract install and Python deps |
 | `tessy ingest SHEET --db DB` | OCR a spreadsheet and index it |
+| `tessy folder DIR --db DB` | OCR images named by verified DL# (`-o out.xlsx` writes a spreadsheet) |
 | `tessy search TERMS --db DB` | Full-text search (`--json` for machine output) |
 | `tessy show ID --db DB` | Print one indexed document in full |
 | `tessy review --db DB` | List documents needing a human check |
 | `tessy stats --db DB` | Index summary |
-| `tessy export --db DB` | Export extracted fields as CSV or JSON |
+| `tessy export --db DB` | Export extracted fields as CSV, JSON, or XLSX |
 | `tessy-gui [DB]` | Launch the desktop app |
 | `tessy-gui --doctor` | Diagnostics, no window (works on a packaged app) |
 | `tessy-gui --selftest` | Prove OCR works end to end |
