@@ -474,6 +474,13 @@ def _add_warnings(result: LicenceFields) -> None:
         result.warnings.append("expiry is not after date of birth - fields may be swapped")
 
 
+def warnings_for_fields(fields: LicenceFields) -> list[str]:
+    """Re-derive parser warnings from (possibly human-corrected) field values."""
+    fields.warnings = []
+    _add_warnings(fields)
+    return list(fields.warnings)
+
+
 def parse_licence(text_or_rows: str | list[str]) -> LicenceFields:
     """Parse licence fields from OCR output.
 

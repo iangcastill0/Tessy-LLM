@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .parse import fold_confusables
+from .parse import LicenceFields, fold_confusables, warnings_for_fields
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Columns carried on each indexed document. Kept explicit so the FTS triggers
 # and the insert statement cannot drift apart silently.
@@ -39,6 +39,19 @@ _FIELD_COLUMNS = (
     "address",
     "jurisdiction",
     "document_type",
+)
+
+# Fields an examiner may correct by eye in the desktop app. Excludes the
+# derived licence_no_folded column, which is recomputed on save.
+EDITABLE_FIELDS = tuple(c for c in _FIELD_COLUMNS if c != "licence_no_folded")
+
+_CORE_COMPLETENESS = (
+    "licence_no",
+    "last_name",
+    "first_name",
+    "dob",
+    "expiry",
+    "jurisdiction",
 )
 
 _SCHEMA = f"""
@@ -63,6 +76,7 @@ CREATE TABLE IF NOT EXISTS documents (
     {chr(10).join(f"    {c} TEXT," for c in _FIELD_COLUMNS)}
     completeness   REAL,
     warnings       TEXT,
+    reviewed_at    TEXT,
     indexed_at     TEXT NOT NULL,
     UNIQUE(source, sheet, row, image_path)
 );
@@ -153,12 +167,27 @@ class TessyIndex:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(SCHEMA_VERSION),),
         )
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Bring an older on-disk schema up to the current columns.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves existing databases untouched, so
+        columns added after v1 (notably ``reviewed_at``) have to be patched in.
+        """
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(documents)")}
+        if "reviewed_at" not in columns:
+            self.conn.execute("ALTER TABLE documents ADD COLUMN reviewed_at TEXT")
+            # Content-sync FTS indexes go stale if rows were written without the
+            # update triggers (e.g. a hand-built v1 file). Rebuild so a later
+            # field correction cannot hit "database disk image is malformed".
+            self.conn.execute("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')")
 
     # -- lifecycle ---------------------------------------------------------
     def close(self) -> None:
@@ -222,6 +251,139 @@ class TessyIndex:
         doc_id = int(cur.fetchone()[0])
         self.conn.commit()
         return doc_id
+
+    def update_fields(
+        self,
+        doc_id: int,
+        fields: dict[str, object],
+        *,
+        mark_reviewed: bool = True,
+    ) -> dict[str, object] | None:
+        """Correct parsed fields on an existing document after a human review.
+
+        Empty strings become NULL. ``licence_no_folded`` and ``completeness`` are
+        recomputed; parser warnings are re-derived from the corrected values so
+        a fixed licence number drops the all-digits flag, while a still-missing
+        DOB keeps its warning. Setting ``mark_reviewed`` stamps ``reviewed_at``
+        so the record leaves the review queue.
+        """
+        existing = self.get(doc_id)
+        if existing is None:
+            return None
+
+        cleaned: dict[str, object] = {}
+        for column in EDITABLE_FIELDS:
+            if column in fields:
+                value = fields[column]
+                if isinstance(value, str):
+                    value = value.strip() or None
+                cleaned[column] = value
+            else:
+                cleaned[column] = existing.get(column)
+
+        licence_no = cleaned.get("licence_no")
+        cleaned["licence_no_folded"] = fold_confusables(str(licence_no)) if licence_no else None
+
+        # Prefer an explicit full_name from the form; otherwise rebuild from parts
+        # so a surname-only correction stays searchable under the new spelling.
+        if not cleaned.get("full_name"):
+            parts = [p for p in (cleaned.get("first_name"), cleaned.get("last_name")) if p]
+            cleaned["full_name"] = " ".join(str(p) for p in parts) if parts else None
+
+        cleaned["completeness"] = round(
+            sum(1 for key in _CORE_COMPLETENESS if cleaned.get(key)) / len(_CORE_COMPLETENESS),
+            3,
+        )
+        cleaned["warnings"] = warnings_for_fields(
+            LicenceFields(
+                **{
+                    k: cleaned.get(k)  # type: ignore[arg-type]
+                    for k in (
+                        "licence_no",
+                        "last_name",
+                        "first_name",
+                        "dob",
+                        "expiry",
+                        "issued",
+                        "sex",
+                        "height",
+                        "weight",
+                        "eyes",
+                        "hair",
+                        "licence_class",
+                        "address",
+                        "jurisdiction",
+                        "document_type",
+                    )
+                }
+            )
+        )
+
+        assignments = [
+            "licence_no = ?",
+            "licence_no_folded = ?",
+            "last_name = ?",
+            "first_name = ?",
+            "full_name = ?",
+            "dob = ?",
+            "expiry = ?",
+            "issued = ?",
+            "sex = ?",
+            "height = ?",
+            "weight = ?",
+            "eyes = ?",
+            "hair = ?",
+            "licence_class = ?",
+            "address = ?",
+            "jurisdiction = ?",
+            "document_type = ?",
+            "completeness = ?",
+            "warnings = ?",
+        ]
+        params: list[object] = [
+            cleaned["licence_no"],
+            cleaned["licence_no_folded"],
+            cleaned["last_name"],
+            cleaned["first_name"],
+            cleaned["full_name"],
+            cleaned["dob"],
+            cleaned["expiry"],
+            cleaned["issued"],
+            cleaned["sex"],
+            cleaned["height"],
+            cleaned["weight"],
+            cleaned["eyes"],
+            cleaned["hair"],
+            cleaned["licence_class"],
+            cleaned["address"],
+            cleaned["jurisdiction"],
+            cleaned["document_type"],
+            cleaned["completeness"],
+            json.dumps(cleaned["warnings"]),
+        ]
+        if mark_reviewed:
+            assignments.append("reviewed_at = ?")
+            params.append(datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+        params.append(doc_id)
+        self.conn.execute(
+            f"UPDATE documents SET {', '.join(assignments)} WHERE id = ?",
+            params,
+        )
+        self.conn.commit()
+        return self.get(doc_id)
+
+    def mark_reviewed(self, doc_id: int) -> dict[str, object] | None:
+        """Accept the current fields as checked without changing them."""
+        existing = self.get(doc_id)
+        if existing is None:
+            return None
+        self.conn.execute(
+            "UPDATE documents SET reviewed_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(timespec="seconds"), doc_id),
+        )
+        self.conn.commit()
+        return self.get(doc_id)
 
     # -- reading -----------------------------------------------------------
     def search(self, query: str, *, limit: int = 20) -> list[SearchHit]:
@@ -301,15 +463,22 @@ class TessyIndex:
         return out
 
     def needs_review(self, *, min_confidence: float = 70.0) -> list[dict[str, object]]:
-        """Documents a human should eyeball: low OCR confidence or parser warnings."""
+        """Documents a human should eyeball: low OCR confidence or parser warnings.
+
+        Records stamped with ``reviewed_at`` (via the desktop correct/mark-reviewed
+        flow) are excluded — the operator has already signed them off.
+        """
         return [
             dict(r)
             for r in self.conn.execute(
                 """
                 SELECT * FROM documents
-                 WHERE (ocr_confidence IS NOT NULL AND ocr_confidence < ?)
-                    OR warnings != '[]'
-                    OR licence_no IS NULL
+                 WHERE reviewed_at IS NULL
+                   AND (
+                        (ocr_confidence IS NOT NULL AND ocr_confidence < ?)
+                     OR warnings != '[]'
+                     OR licence_no IS NULL
+                   )
                  ORDER BY ocr_confidence IS NULL DESC, ocr_confidence ASC
                 """,
                 (min_confidence,),

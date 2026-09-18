@@ -58,6 +58,10 @@ misread immediately, with the warning directly above it.
   confusion-folded licence-number matching.
 - **Needs review** — filters to flagged records, worst first. Flagged rows are
   tinted in the list, and their warnings appear above the fields.
+- **Correct by eye** — edit any extracted field next to the image, then
+  **Save corrections** (writes back to the index and marks the record
+  reviewed) or **Mark reviewed** to accept the OCR as-is. Reviewed records
+  leave the review queue.
 - **File → Export CSV** — the extracted fields for the whole index.
 
 It uses Tkinter, which ships with Python and opens **no socket and no server** —

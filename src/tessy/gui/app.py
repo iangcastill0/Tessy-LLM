@@ -31,7 +31,7 @@ except ImportError as exc:  # pragma: no cover - platform dependent
     ) from exc
 
 from .. import __version__
-from ..index import TessyIndex
+from ..index import EDITABLE_FIELDS, TessyIndex
 from ..ocr import DEFAULT_PSMS, TesseractNotFound, available_languages, tesseract_version
 from .jobs import Failed, Finished, IngestJob, Progress
 
@@ -58,6 +58,8 @@ DETAIL_FIELDS = (
     ("address", "Address"),
 )
 
+assert {key for key, _ in DETAIL_FIELDS} <= set(EDITABLE_FIELDS)
+
 
 class TessyApp(ttk.Frame):
     """Main application window."""
@@ -70,6 +72,11 @@ class TessyApp(ttk.Frame):
         self.job: IngestJob | None = None
         self._preview_image = None  # must outlive the call or tkinter blanks it
         self._rows: dict[str, dict] = {}
+        self._selected_item: str | None = None
+        self._selected_id: int | None = None
+        self._baseline: dict[str, str] = {}
+        self._field_vars: dict[str, tk.StringVar] = {}
+        self._suppress_dirty = False
 
         master.title(f"Tessy {__version__} - licence OCR and index")
         master.geometry("1180x740")
@@ -180,7 +187,8 @@ class TessyApp(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         panes.add(left, weight=3)
 
-        # -- detail pane
+        # -- detail pane: image beside editable fields so an examiner can
+        # correct OCR by eye and write the fix back into the index.
         right = ttk.Frame(panes, padding=(10, 0, 0, 0))
         right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
@@ -201,27 +209,75 @@ class TessyApp(ttk.Frame):
         detail_wrap.rowconfigure(0, weight=1)
         detail_wrap.columnconfigure(0, weight=1)
 
-        self.detail = tk.Text(
-            detail_wrap,
+        canvas = tk.Canvas(detail_wrap, highlightthickness=0, background="#fbfbfb")
+        canvas.grid(row=0, column=0, sticky="nsew")
+        dscroll = ttk.Scrollbar(detail_wrap, orient="vertical", command=canvas.yview)
+        dscroll.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=dscroll.set)
+
+        form = ttk.Frame(canvas, padding=(8, 8, 8, 8))
+        self._detail_form = form
+        form_window = canvas.create_window((0, 0), window=form, anchor="nw")
+
+        def _sync_scroll(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(form_window, width=canvas.winfo_width())
+
+        form.bind("<Configure>", _sync_scroll)
+        canvas.bind("<Configure>", _sync_scroll)
+
+        self.warnings_label = ttk.Label(
+            form, text="", foreground="#a4500f", wraplength=360, justify="left"
+        )
+        self.warnings_label.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+
+        self._field_vars = {}
+        for row_i, (key, label) in enumerate(DETAIL_FIELDS, start=1):
+            ttk.Label(form, text=label, foreground="#555").grid(
+                row=row_i, column=0, sticky="w", pady=2, padx=(0, 8)
+            )
+            var = tk.StringVar()
+            entry = ttk.Entry(form, textvariable=var, width=36)
+            entry.grid(row=row_i, column=1, sticky="ew", pady=2)
+            var.trace_add("write", lambda *_a: self._on_field_edited())
+            self._field_vars[key] = var
+        form.columnconfigure(1, weight=1)
+
+        buttons = ttk.Frame(form)
+        buttons.grid(row=len(DETAIL_FIELDS) + 1, column=0, columnspan=2, sticky="ew", pady=(10, 4))
+        self.save_button = ttk.Button(
+            buttons, text="Save corrections", command=self.save_corrections, state="disabled"
+        )
+        self.save_button.pack(side="left")
+        self.review_button = ttk.Button(
+            buttons, text="Mark reviewed", command=self.mark_reviewed, state="disabled"
+        )
+        self.review_button.pack(side="left", padx=(6, 0))
+        self.discard_button = ttk.Button(
+            buttons, text="Discard", command=self.discard_edits, state="disabled"
+        )
+        self.discard_button.pack(side="left", padx=(6, 0))
+
+        self.source_label = ttk.Label(form, text="", foreground="#666", wraplength=360)
+        self.source_label.grid(
+            row=len(DETAIL_FIELDS) + 2, column=0, columnspan=2, sticky="ew", pady=(8, 4)
+        )
+
+        ttk.Label(form, text="Raw OCR text", font=("TkDefaultFont", 10, "bold")).grid(
+            row=len(DETAIL_FIELDS) + 3, column=0, columnspan=2, sticky="w", pady=(6, 2)
+        )
+        self.ocr_text = tk.Text(
+            form,
             wrap="word",
-            height=14,
+            height=8,
             width=44,
             state="disabled",
             relief="flat",
-            background="#fbfbfb",
-            padx=8,
-            pady=8,
+            background="#f0f0f0",
+            padx=6,
+            pady=6,
         )
-        self.detail.grid(row=0, column=0, sticky="nsew")
-        dscroll = ttk.Scrollbar(detail_wrap, orient="vertical", command=self.detail.yview)
-        self.detail.configure(yscrollcommand=dscroll.set)
-        dscroll.grid(row=0, column=1, sticky="ns")
-
-        self.detail.tag_configure("label", foreground="#555")
-        self.detail.tag_configure("value", font=("TkDefaultFont", 10, "bold"))
-        self.detail.tag_configure("warn", foreground="#a4500f")
-        self.detail.tag_configure("missing", foreground="#999")
-        self.detail.tag_configure("heading", font=("TkDefaultFont", 10, "bold"))
+        self.ocr_text.grid(row=len(DETAIL_FIELDS) + 4, column=0, columnspan=2, sticky="ew")
 
         panes.add(right, weight=2)
 
@@ -433,10 +489,12 @@ class TessyApp(ttk.Frame):
     # -- data --------------------------------------------------------------
     def refresh(self) -> None:
         """Reload the results list from the index."""
+        keep_id = self._selected_id
         self.tree.delete(*self.tree.get_children())
         self._rows.clear()
 
         if not self.db_path.exists():
+            self._clear_detail()
             self.set_status(f"No index yet at {self.db_path} - choose a spreadsheet and run OCR.")
             return
 
@@ -459,10 +517,12 @@ class TessyApp(ttk.Frame):
             self.set_status(f"Could not read the index: {exc}")
             return
 
+        reselect: str | None = None
         for doc in docs:
             if not doc:
                 continue
             warnings = _warnings_of(doc)
+            reviewed = bool(doc.get("reviewed_at"))
             conf = doc.get("ocr_confidence")
             item = self.tree.insert(
                 "",
@@ -474,61 +534,182 @@ class TessyApp(ttk.Frame):
                     f"{doc.get('sheet') or ''} {doc.get('row') or ''}".strip(),
                     f"{conf:.0f}" if isinstance(conf, (int, float)) else "-",
                 ),
-                tags=("flagged",) if warnings else (),
+                tags=("flagged",) if warnings and not reviewed else (),
             )
             self._rows[item] = doc
+            if keep_id is not None and doc.get("id") == keep_id:
+                reselect = item
 
         noun = "record" if len(self._rows) == 1 else "records"
         scope = "flagged" if self.view.get() == "review" else "indexed"
         matching = f" matching {query!r}" if query else ""
         self.set_status(f"{len(self._rows)} {scope} {noun}{matching}")
 
+        if reselect is not None:
+            self.tree.selection_set(reselect)
+            self.tree.see(reselect)
+            self._show_detail(self._rows[reselect], item=reselect)
+        elif keep_id is not None:
+            self._clear_detail()
+
     def on_select(self, _event=None) -> None:
         selection = self.tree.selection()
         if not selection:
             return
-        doc = self._rows.get(selection[0])
+        item = selection[0]
+        if item == self._selected_item:
+            return
+        if self._is_dirty() and not self._confirm_discard_edits():
+            # Put the previous selection back; the operator cancelled the switch.
+            if self._selected_item is not None:
+                self.tree.selection_set(self._selected_item)
+            return
+        doc = self._rows.get(item)
         if doc:
-            self._show_detail(doc)
+            self._show_detail(doc, item=item)
 
-    def _show_detail(self, doc: dict) -> None:
+    def _show_detail(self, doc: dict, *, item: str | None = None) -> None:
         self._show_preview(doc.get("image_path"))
-
-        self.detail.config(state="normal")
-        self.detail.delete("1.0", "end")
+        self._selected_item = item
+        self._selected_id = int(doc["id"]) if doc.get("id") is not None else None
 
         warnings = _warnings_of(doc)
         if warnings:
-            self.detail.insert("end", "Needs checking\n", "heading")
-            for warning in warnings:
-                self.detail.insert("end", f"  ! {warning}\n", "warn")
-            self.detail.insert("end", "\n")
+            self.warnings_label.config(
+                text="Needs checking:\n" + "\n".join(f"  ! {w}" for w in warnings)
+            )
+        elif doc.get("reviewed_at"):
+            self.warnings_label.config(text=f"Reviewed {doc['reviewed_at']}")
+        else:
+            self.warnings_label.config(text="")
 
-        for key, label in DETAIL_FIELDS:
+        self._suppress_dirty = True
+        baseline: dict[str, str] = {}
+        for key, _label in DETAIL_FIELDS:
             value = doc.get(key)
-            self.detail.insert("end", f"{label:<14}", "label")
-            if value:
-                self.detail.insert("end", f"{value}\n", "value")
-            else:
-                self.detail.insert("end", "-\n", "missing")
+            text = "" if value is None else str(value)
+            baseline[key] = text
+            self._field_vars[key].set(text)
+        self._baseline = baseline
+        self._suppress_dirty = False
 
         conf = doc.get("ocr_confidence")
-        self.detail.insert("end", "\nSource\n", "heading")
-        for label, value in (
-            ("Spreadsheet", Path(doc["source"]).name if doc.get("source") else "-"),
-            ("Sheet / row", f"{doc.get('sheet')} / {doc.get('row')}"),
-            ("OCR conf", f"{conf:.1f}" if isinstance(conf, (int, float)) else "-"),
-            ("PSM", doc.get("ocr_psm") or "-"),
-            ("Image", doc.get("image_path") or "(text-only row)"),
-        ):
-            self.detail.insert("end", f"{label:<14}", "label")
-            self.detail.insert("end", f"{value}\n")
+        source_bits = [
+            f"Spreadsheet: {Path(doc['source']).name if doc.get('source') else '-'}",
+            f"Sheet / row: {doc.get('sheet')} / {doc.get('row')}",
+            f"OCR conf: {conf:.1f}" if isinstance(conf, (int, float)) else "OCR conf: -",
+            f"PSM: {doc.get('ocr_psm') or '-'}",
+            f"Image: {doc.get('image_path') or '(text-only row)'}",
+        ]
+        self.source_label.config(text="\n".join(source_bits))
 
+        self.ocr_text.config(state="normal")
+        self.ocr_text.delete("1.0", "end")
         if doc.get("ocr_text"):
-            self.detail.insert("end", "\nRaw OCR text\n", "heading")
-            self.detail.insert("end", doc["ocr_text"] + "\n")
+            self.ocr_text.insert("end", doc["ocr_text"])
+        self.ocr_text.config(state="disabled")
 
-        self.detail.config(state="disabled")
+        self.review_button.config(state="normal")
+        self._sync_edit_buttons()
+
+    def _clear_detail(self) -> None:
+        self._selected_item = None
+        self._selected_id = None
+        self._baseline = {}
+        self._suppress_dirty = True
+        for var in self._field_vars.values():
+            var.set("")
+        self._suppress_dirty = False
+        self.warnings_label.config(text="")
+        self.source_label.config(text="")
+        self.ocr_text.config(state="normal")
+        self.ocr_text.delete("1.0", "end")
+        self.ocr_text.config(state="disabled")
+        self._preview_image = None
+        self.preview.config(image="", text="Select a record to see its licence image")
+        self.save_button.config(state="disabled")
+        self.discard_button.config(state="disabled")
+        self.review_button.config(state="disabled")
+
+    def _on_field_edited(self) -> None:
+        if self._suppress_dirty:
+            return
+        self._sync_edit_buttons()
+
+    def _is_dirty(self) -> bool:
+        if not self._baseline:
+            return False
+        return any(self._field_vars[k].get() != self._baseline.get(k, "") for k, _ in DETAIL_FIELDS)
+
+    def _sync_edit_buttons(self) -> None:
+        dirty = self._is_dirty()
+        state = "normal" if dirty else "disabled"
+        self.save_button.config(state=state)
+        self.discard_button.config(state=state)
+
+    def _confirm_discard_edits(self) -> bool:
+        return bool(
+            messagebox.askyesno(
+                "Discard edits?",
+                "This record has unsaved corrections. Discard them and switch?",
+            )
+        )
+
+    def _current_field_values(self) -> dict[str, str]:
+        return {key: self._field_vars[key].get() for key, _ in DETAIL_FIELDS}
+
+    def save_corrections(self) -> None:
+        if self._selected_id is None:
+            return
+        values = self._current_field_values()
+        try:
+            with TessyIndex(self.db_path) as index:
+                updated = index.update_fields(self._selected_id, values, mark_reviewed=True)
+        except Exception as exc:  # noqa: BLE001 - surface to the operator, keep the window up
+            messagebox.showerror("Could not save", str(exc))
+            return
+        if updated is None:
+            messagebox.showerror("Could not save", "That record is no longer in the index.")
+            self.refresh()
+            return
+        # Refresh first: it writes the record count to the status label.
+        self.refresh()
+        self.set_status(f"Saved corrections for record #{updated['id']}")
+
+    def mark_reviewed(self) -> None:
+        if self._selected_id is None:
+            return
+        if self._is_dirty():
+            if not messagebox.askyesno(
+                "Unsaved corrections",
+                "Save the corrections and mark this record as reviewed?",
+            ):
+                return
+            self.save_corrections()
+            return
+        try:
+            with TessyIndex(self.db_path) as index:
+                updated = index.mark_reviewed(self._selected_id)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Could not mark reviewed", str(exc))
+            return
+        if updated is None:
+            messagebox.showerror(
+                "Could not mark reviewed", "That record is no longer in the index."
+            )
+            self.refresh()
+            return
+        self.refresh()
+        self.set_status(f"Marked record #{updated['id']} as reviewed")
+
+    def discard_edits(self) -> None:
+        if not self._baseline:
+            return
+        self._suppress_dirty = True
+        for key, text in self._baseline.items():
+            self._field_vars[key].set(text)
+        self._suppress_dirty = False
+        self._sync_edit_buttons()
 
     def _show_preview(self, image_path: str | None) -> None:
         if not image_path or not Path(image_path).is_file():
@@ -554,6 +735,10 @@ class TessyApp(ttk.Frame):
         self.status.config(text=text)
 
     def on_close(self) -> None:
+        if self._is_dirty() and not messagebox.askokcancel(
+            "Quit", "You have unsaved corrections. Quit anyway?"
+        ):
+            return
         if self.job is not None and self.job.running:
             if not messagebox.askokcancel("Quit", "OCR is still running. Stop it and quit?"):
                 return
