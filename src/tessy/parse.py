@@ -19,21 +19,35 @@ from dataclasses import dataclass, field
 # Canonical field -> label spellings seen on US/CA licences, including the
 # AAMVA numeric codes printed on many of them.
 LABEL_ALIASES: dict[str, tuple[str, ...]] = {
-    "licence_no": ("DL", "DLN", "LIC", "LICENSE", "LICENCE", "NO", "4D", "IDN"),
-    "last_name": ("LN", "LAST", "SURNAME", "1"),
-    "first_name": ("FN", "FIRST", "GIVEN", "2"),
-    "dob": ("DOB", "BIRTH", "BRTH", "BIRTHDATE", "3"),
-    "expiry": ("EXP", "EXPIRES", "EXPIRY", "4B"),
-    "issued": ("ISS", "ISSUED", "ISSUE", "4A"),
+    # Extra spellings from usa-dl-ocr FIELD_PATTERNS (MIT), kept only when they
+    # do not fuzzy-collide with real values (e.g. BORN≈BRN ate eye colour).
+    "licence_no": (
+        "DL",
+        "DLN",
+        "LIC",
+        "LICENSE",
+        "LICENCE",
+        "DLNO",
+        "LICNO",
+        "LICENSENO",
+        "NO",
+        "4D",
+        "IDN",
+    ),
+    "last_name": ("LN", "LAST", "SURNAME", "FAMILYNAME", "LASTNAME", "1"),
+    "first_name": ("FN", "FIRST", "GIVEN", "FIRSTNAME", "GIVENNAME", "2"),
+    "dob": ("DOB", "BIRTH", "BRTH", "BIRTHDATE", "DATEOFBIRTH", "3"),
+    "expiry": ("EXP", "EXPIRES", "EXPIRY", "EXPIRATION", "EXPDATE", "4B"),
+    "issued": ("ISS", "ISSUED", "ISSUE", "ISSUEDATE", "4A"),
     "sex": ("SEX", "GENDER", "15"),
-    "height": ("HGT", "HEIGHT", "16"),
-    "weight": ("WGT", "WEIGHT", "17"),
+    "height": ("HGT", "HEIGHT", "HT", "16"),
+    "weight": ("WGT", "WEIGHT", "WT", "17"),
     "eyes": ("EYES", "EYE", "18"),
     "hair": ("HAIR", "19"),
     "licence_class": ("CLASS", "CLS", "9"),
     "address": ("ADDRESS", "ADDR", "8"),
-    "endorsements": ("END", "ENDORSEMENTS"),
-    "restrictions": ("RSTR", "REST", "RESTRICTIONS"),
+    "endorsements": ("END", "ENDORSEMENTS", "ENDORSE"),
+    "restrictions": ("RSTR", "REST", "RESTR", "RESTRICTIONS"),
 }
 
 # Reverse lookup: normalised alias -> canonical field.
@@ -479,6 +493,70 @@ def warnings_for_fields(fields: LicenceFields) -> list[str]:
     fields.warnings = []
     _add_warnings(fields)
     return list(fields.warnings)
+
+
+def looks_like_driver_licence(text: str) -> bool:
+    """Heuristic: does OCR text look like a US/CA driver licence?
+
+    Adapted from usa-dl-ocr's ``detectDriverLicense`` — used to warn when a
+    folder image is probably not a licence, without rejecting the row.
+    """
+    upper = text.upper()
+    score = 0
+    indicators = (
+        r"DRIVER(?:'?S)?\s*LICEN[SC]E",
+        r"OPERATOR(?:'?S)?\s*LICENSE",
+        r"IDENTIFICATION\s*CARD",
+        r"\bDL\b",
+        r"\bDOB\b",
+        r"\bEXP(?:IRES?)?\b",
+        r"CLASS\s*[A-Z0-9]",
+    )
+    for pattern in indicators:
+        if re.search(pattern, upper):
+            score += 1
+    if any(state in upper for state in US_STATES):
+        score += 1
+    if DATE_RE.search(text) or ISO_DATE_RE.search(text):
+        score += 1
+    return score >= 2
+
+
+def apply_verified_licence_no(fields: LicenceFields, verified: str | None) -> LicenceFields:
+    """Prefer an operator-supplied licence number (e.g. from the image filename).
+
+    The filename is treated as ground truth — that is not OCR guessing. When OCR
+    disagrees even after confusion-folding, a warning is kept so the mismatch
+    stays visible in review.
+    """
+    if not verified:
+        return fields
+    verified = verified.strip()
+    if not verified:
+        return fields
+
+    ocr_value = fields.licence_no
+    if ocr_value and fold_confusables(ocr_value) != fold_confusables(verified):
+        fields.warnings.append(
+            f"OCR read licence_no as {ocr_value!r}; filename / verified value is "
+            f"{verified!r} - using the verified value"
+        )
+    elif ocr_value and ocr_value != verified:
+        fields.warnings.append(
+            f"OCR licence_no {ocr_value!r} matches verified {verified!r} after "
+            "glyph folding; keeping the verified spelling"
+        )
+    fields.licence_no = verified
+    # Drop the "all digits / missing" warnings that the verified value may fix.
+    fields.warnings = [
+        w
+        for w in fields.warnings
+        if not w.startswith("licence_no is all digits") and w != "no licence number found"
+    ]
+    _add_warnings(fields)
+    # De-dupe after re-running
+    fields.warnings = list(dict.fromkeys(fields.warnings))
+    return fields
 
 
 def parse_licence(text_or_rows: str | list[str]) -> LicenceFields:

@@ -176,6 +176,27 @@ class TestOptionsArePassedThrough:
         assert callable(captured["on_progress"])
         assert callable(captured["should_cancel"])
 
+    def test_folder_mode_omits_spreadsheet_only_options(self, tmp_path):
+        captured: dict = {}
+
+        def runner(folder, db_path, **kwargs):
+            captured["folder"] = folder
+            captured.update(kwargs)
+            return ProcessReport(spreadsheet=str(folder))
+
+        job = IngestJob(
+            tmp_path,
+            tmp_path / "a.db",
+            mode="folder",
+            runner=runner,
+        )
+        job.start()
+        job.join(timeout=5)
+
+        assert captured["folder"] == tmp_path
+        assert "sheet" not in captured
+        assert "header_row" not in captured
+
     def test_failures_survive_into_the_finished_report(self, tmp_path):
         def runner(spreadsheet, db_path, **kwargs):
             report = ProcessReport(spreadsheet=str(spreadsheet), rows=2, indexed=1)

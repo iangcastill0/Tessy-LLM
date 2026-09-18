@@ -69,6 +69,7 @@ class TessyApp(ttk.Frame):
         self.master: tk.Tk = master
         self.db_path = Path(db_path)
         self.spreadsheet: Path | None = None
+        self.ingest_mode: str = "spreadsheet"  # or "folder"
         self.job: IngestJob | None = None
         self._preview_image = None  # must outlive the call or tkinter blanks it
         self._rows: dict[str, dict] = {}
@@ -103,9 +104,11 @@ class TessyApp(ttk.Frame):
 
         file_menu = tk.Menu(menu, tearoff=0)
         file_menu.add_command(label="Open spreadsheet...", command=self.choose_spreadsheet)
+        file_menu.add_command(label="Open DL image folder...", command=self.choose_image_folder)
         file_menu.add_command(label="Choose index...", command=self.choose_index)
         file_menu.add_separator()
         file_menu.add_command(label="Export CSV...", command=self.export_csv)
+        file_menu.add_command(label="Export spreadsheet...", command=self.export_spreadsheet)
         file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self.on_close)
         menu.add_cascade(label="File", menu=file_menu)
@@ -119,23 +122,26 @@ class TessyApp(ttk.Frame):
     def _build_toolbar(self) -> None:
         bar = ttk.Frame(self)
         bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        bar.columnconfigure(3, weight=1)
+        bar.columnconfigure(4, weight=1)
 
         ttk.Button(bar, text="Open spreadsheet...", command=self.choose_spreadsheet).grid(
             row=0, column=0
         )
+        ttk.Button(bar, text="Open DL folder...", command=self.choose_image_folder).grid(
+            row=0, column=1, padx=(6, 0)
+        )
         self.run_button = ttk.Button(bar, text="Run OCR", command=self.run_ingest, state="disabled")
-        self.run_button.grid(row=0, column=1, padx=(6, 0))
+        self.run_button.grid(row=0, column=2, padx=(6, 0))
         self.stop_button = ttk.Button(
             bar, text="Stop", command=self.cancel_ingest, state="disabled"
         )
-        self.stop_button.grid(row=0, column=2, padx=(6, 0))
+        self.stop_button.grid(row=0, column=3, padx=(6, 0))
 
-        self.sheet_label = ttk.Label(bar, text="No spreadsheet selected", foreground="#666")
-        self.sheet_label.grid(row=0, column=3, sticky="w", padx=12)
+        self.sheet_label = ttk.Label(bar, text="No input selected", foreground="#666")
+        self.sheet_label.grid(row=0, column=4, sticky="w", padx=12)
 
         self.tess_label = ttk.Label(bar, text="Tesseract: checking...")
-        self.tess_label.grid(row=0, column=4, sticky="e")
+        self.tess_label.grid(row=0, column=5, sticky="e")
 
     def _build_searchbar(self) -> None:
         bar = ttk.Frame(self)
@@ -352,9 +358,24 @@ class TessyApp(ttk.Frame):
         if not chosen:
             return
         self.spreadsheet = Path(chosen)
+        self.ingest_mode = "spreadsheet"
         self.sheet_label.config(text=str(self.spreadsheet), foreground="#000")
         self.run_button.config(state="normal" if self.tesseract_ok else "disabled")
         self.set_status(f"Selected {self.spreadsheet.name}. Press Run OCR to index it.")
+
+    def choose_image_folder(self) -> None:
+        """Pick a folder of licence images named by verified DL#."""
+        chosen = filedialog.askdirectory(title="Select folder of DL images")
+        if not chosen:
+            return
+        self.spreadsheet = Path(chosen)
+        self.ingest_mode = "folder"
+        self.sheet_label.config(text=f"Folder: {self.spreadsheet}", foreground="#000")
+        self.run_button.config(state="normal" if self.tesseract_ok else "disabled")
+        self.set_status(
+            f"Selected folder {self.spreadsheet.name} "
+            "(name each image with its verified DL#). Press Run OCR."
+        )
 
     def choose_index(self) -> None:
         chosen = filedialog.asksaveasfilename(
@@ -372,7 +393,10 @@ class TessyApp(ttk.Frame):
 
     def run_ingest(self) -> None:
         if self.spreadsheet is None:
-            messagebox.showwarning("No spreadsheet", "Choose a spreadsheet first.")
+            messagebox.showwarning(
+                "No input",
+                "Choose a spreadsheet or a folder of DL images first.",
+            )
             return
         if self.job is not None and self.job.running:
             return
@@ -382,6 +406,7 @@ class TessyApp(ttk.Frame):
             self.db_path,
             workdir=self.db_path.parent / "work",
             psms=DEFAULT_PSMS,
+            mode=self.ingest_mode,
         )
         self.job.start()
         self.run_button.config(state="disabled")
@@ -446,6 +471,16 @@ class TessyApp(ttk.Frame):
                 f"{len(report.failures)} image(s) failed. The rest were indexed.\n\n{detail}",
             )
 
+        if (
+            report.indexed
+            and not report.cancelled
+            and messagebox.askyesno(
+                "Export spreadsheet?",
+                f"{report.indexed} licence(s) indexed. Write them to an Excel spreadsheet now?",
+            )
+        ):
+            self.export_spreadsheet()
+
     def _on_failed(self, event: Failed) -> None:
         self._reset_controls()
         self.set_status(f"Failed: {event.error}")
@@ -473,18 +508,37 @@ class TessyApp(ttk.Frame):
         if not target:
             return
 
-        import csv as _csv
-
-        from ..cli import EXPORT_COLUMNS
+        from ..export_sheet import write_csv
 
         with TessyIndex(self.db_path) as index:
             docs = index.all_documents()
-        with open(target, "w", newline="") as handle:
-            writer = _csv.DictWriter(handle, fieldnames=list(EXPORT_COLUMNS), extrasaction="ignore")
-            writer.writeheader()
-            for doc in docs:
-                writer.writerow({k: doc.get(k) for k in EXPORT_COLUMNS})
+        write_csv(docs, target)
         self.set_status(f"Exported {len(docs)} row(s) to {target}")
+
+    def export_spreadsheet(self) -> None:
+        """Write the indexed fields to an .xlsx workbook (one licence per row)."""
+        if not self.db_path.exists():
+            messagebox.showwarning("No index", "Nothing to export yet - run OCR first.")
+            return
+        target = filedialog.asksaveasfilename(
+            title="Export licence spreadsheet",
+            defaultextension=".xlsx",
+            initialfile="licences.xlsx",
+            filetypes=[("Excel workbook", "*.xlsx")],
+        )
+        if not target:
+            return
+
+        from ..export_sheet import write_xlsx
+
+        with TessyIndex(self.db_path) as index:
+            docs = index.all_documents()
+        write_xlsx(docs, target)
+        self.set_status(f"Exported {len(docs)} row(s) to {target}")
+        messagebox.showinfo(
+            "Spreadsheet written",
+            f"Wrote {len(docs)} licence row(s) to:\n{target}",
+        )
 
     # -- data --------------------------------------------------------------
     def refresh(self) -> None:

@@ -218,6 +218,7 @@ class TestRunOutcomes:
 
     def test_finished_updates_status_and_reenables_run(self, app, monkeypatch):
         monkeypatch.setattr(app, "tesseract_ok", True)
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
         app.run_button.config(state="disabled")
         app._on_finished(self._report())
 
@@ -228,6 +229,7 @@ class TestRunOutcomes:
 
     def test_cancelled_run_says_so(self, app, monkeypatch):
         monkeypatch.setattr(app, "tesseract_ok", True)
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
         app._on_finished(self._report(cancelled=True))
         assert "Cancelled after" in app.status.cget("text")
 
@@ -236,6 +238,7 @@ class TestRunOutcomes:
 
         shown: list[tuple] = []
         monkeypatch.setattr("tkinter.messagebox.showwarning", lambda *a, **k: shown.append(a))
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
         monkeypatch.setattr(app, "tesseract_ok", True)
 
         report = self._report()
@@ -278,7 +281,7 @@ class TestExport:
         app.export_csv()
 
         lines = target.read_text().strip().splitlines()
-        assert lines[0].startswith("id,source,sheet,row")
+        assert lines[0].startswith("verified_licence_no,")
         assert len(lines) == 3  # header + 2 records
 
     def test_export_without_an_index_warns(self, app, tmp_path, monkeypatch):
@@ -292,6 +295,23 @@ class TestExport:
         monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **k: "")
         app.export_csv()
         assert not list(tmp_path.glob("*.csv"))
+
+    def test_export_spreadsheet_writes_xlsx(self, app, tmp_path, monkeypatch):
+        target = tmp_path / "licences.xlsx"
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **k: str(target))
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *a, **k: None)
+        app.export_spreadsheet()
+        assert target.is_file()
+        assert "Exported 2 row" in app.status.cget("text")
+
+
+class TestFolderSelection:
+    def test_choosing_a_folder_sets_folder_mode(self, app, tmp_path, monkeypatch):
+        monkeypatch.setattr("tkinter.filedialog.askdirectory", lambda **k: str(tmp_path))
+        app.choose_image_folder()
+        assert app.ingest_mode == "folder"
+        assert app.spreadsheet == tmp_path
+        assert str(app.run_button.cget("state")) in {"normal", "disabled"}  # depends on tesseract
 
 
 class TestProgressBar:

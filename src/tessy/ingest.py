@@ -240,3 +240,72 @@ def _as_image_path(value: str, base: Path) -> Path | None:
         except OSError:
             continue
     return None
+
+
+def verified_licence_no_from_filename(path: Path) -> str:
+    """Treat the image stem as the operator-verified licence number.
+
+    ``I1234562.png`` / ``T4459981.JPG`` → ``I1234562`` / ``T4459981``. Trailing
+    ``_front`` / ``_back`` / ``-front`` suffixes are stripped so a pair of
+    scans for one card still share one verified id.
+    """
+    stem = path.stem.strip()
+    lowered = stem.lower()
+    for suffix in ("_front", "_back", "-front", "-back", " front", " back"):
+        if lowered.endswith(suffix):
+            stem = stem[: -len(suffix)].rstrip("_- ")
+            break
+    return stem.strip()
+
+
+def load_image_folder(folder: str | Path) -> list[SheetRecord]:
+    """Build one record per licence image in ``folder``.
+
+    Images are named by their verified licence number (the workflow an examiner
+    uses when they already know the DL# and need structured fields out the other
+    side). Non-image files are ignored; an empty folder raises.
+    """
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise SpreadsheetError(f"Not a directory: {folder}")
+
+    images = sorted(
+        (
+            path
+            for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+        ),
+        key=lambda p: p.name.lower(),
+    )
+    if not images:
+        raise SpreadsheetError(
+            f"No licence images found in {folder} (looking for {', '.join(sorted(IMAGE_SUFFIXES))})"
+        )
+
+    records: list[SheetRecord] = []
+    for row_number, path in enumerate(images, start=1):
+        verified = verified_licence_no_from_filename(path)
+        if not verified:
+            continue
+        records.append(
+            SheetRecord(
+                sheet="DL images",
+                row=row_number,
+                text={
+                    "verified_licence_no": verified,
+                    "filename": path.name,
+                },
+                images=[
+                    ImageRef(
+                        path=path.resolve(),
+                        origin="path",
+                        sheet="DL images",
+                        row=row_number,
+                        column="A",
+                    )
+                ],
+            )
+        )
+    if not records:
+        raise SpreadsheetError(f"No usable image filenames in {folder}")
+    return records
