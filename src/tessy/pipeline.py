@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .index import TessyIndex
-from .ingest import ImageRef, SheetRecord, load_records
+from .ingest import ImageRef, SheetRecord, load_image_folder, load_records
 from .ocr import DEFAULT_LANG, DEFAULT_PSMS, OcrResult, TesseractFailed, run_best
-from .parse import parse_licence
+from .parse import apply_verified_licence_no, looks_like_driver_licence, parse_licence
 from .preprocess import preprocess
 
 log = logging.getLogger("tessy")
@@ -122,6 +122,14 @@ def process_record(
             continue
 
         fields = parse_licence(result.visual_lines)
+        verified = record.text.get("verified_licence_no")
+        apply_verified_licence_no(fields, verified)
+        if result.text and not looks_like_driver_licence(result.text):
+            fields.warnings.append(
+                "OCR text may not be a driver licence - verify against the image"
+            )
+            fields.warnings = list(dict.fromkeys(fields.warnings))
+
         index.add_document(
             source=source,
             sheet=record.sheet,
@@ -184,6 +192,60 @@ def process_spreadsheet(
                 record,
                 index,
                 source=str(xlsx_path),
+                workdir=workdir,
+                report=report,
+                lang=lang,
+                psms=psms,
+                do_preprocess=do_preprocess,
+            )
+
+    report.duration_s = time.monotonic() - started
+    return report
+
+
+def process_image_folder(
+    folder: str | Path,
+    db_path: str | Path,
+    *,
+    workdir: str | Path | None = None,
+    lang: str = DEFAULT_LANG,
+    psms: tuple[int, ...] = DEFAULT_PSMS,
+    do_preprocess: bool = True,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> ProcessReport:
+    """OCR a folder of licence images named by verified DL#.
+
+    ``I1234562.png`` becomes one indexed row whose licence number is taken from
+    the filename (operator-verified) and whose other fields come from OCR.
+    """
+    started = time.monotonic()
+    folder = Path(folder).resolve()
+    workdir = Path(workdir) if workdir else Path(db_path).parent / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    report = ProcessReport(spreadsheet=str(folder))
+    records = load_image_folder(folder)
+    report.rows = len(records)
+
+    with TessyIndex(db_path) as index:
+        for position, record in enumerate(records, start=1):
+            if should_cancel is not None and should_cancel():
+                report.cancelled = True
+                log.info(
+                    "folder run cancelled after %d of %d images",
+                    position - 1,
+                    len(records),
+                )
+                break
+
+            verified = record.text.get("verified_licence_no", record.images[0].path.name)
+            if on_progress is not None:
+                on_progress(position, len(records), f"{verified} ({record.images[0].path.name})")
+            process_record(
+                record,
+                index,
+                source=str(folder),
                 workdir=workdir,
                 report=report,
                 lang=lang,

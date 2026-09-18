@@ -53,6 +53,36 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--quiet", action="store_true", help="no per-row progress")
     ingest.set_defaults(func=cmd_ingest)
 
+    folder = sub.add_parser(
+        "folder",
+        help="OCR a folder of DL images named by verified licence number",
+    )
+    folder.add_argument(
+        "directory",
+        help="folder of images (filename stem = verified DL#, e.g. I1234562.png)",
+    )
+    _add_db_arg(folder)
+    folder.add_argument("--lang", default="eng", help="tesseract language (default eng)")
+    folder.add_argument(
+        "--psm",
+        type=int,
+        action="append",
+        default=None,
+        help="page-segmentation mode to try; repeat to try several",
+    )
+    folder.add_argument(
+        "--no-preprocess", action="store_true", help="skip image clean-up before OCR"
+    )
+    folder.add_argument("--workdir", default=None, help="scratch dir for preprocessed images")
+    folder.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="also write an .xlsx spreadsheet of extracted rows",
+    )
+    folder.add_argument("--quiet", action="store_true", help="no per-image progress")
+    folder.set_defaults(func=cmd_folder)
+
     search = sub.add_parser("search", help="full-text search the index")
     search.add_argument("query", nargs="+", help="search terms")
     _add_db_arg(search)
@@ -81,7 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = sub.add_parser("export", help="export extracted fields")
     _add_db_arg(export)
-    export.add_argument("--format", choices=("csv", "json"), default="csv")
+    export.add_argument(
+        "--format", choices=("csv", "json", "xlsx"), default="csv", help="output format"
+    )
     export.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
     export.set_defaults(func=cmd_export)
 
@@ -149,6 +181,39 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     print(report.summary())
     print(f"\nIndex written to {Path(args.db).resolve()}")
     print(f"Search it with:  tessy search <terms> --db {args.db}")
+    return 1 if report.failures and report.indexed == 0 else 0
+
+
+def cmd_folder(args: argparse.Namespace) -> int:
+    from .export_sheet import write_xlsx
+    from .index import TessyIndex
+    from .ocr import DEFAULT_PSMS
+    from .pipeline import process_image_folder
+
+    psms = tuple(args.psm) if args.psm else DEFAULT_PSMS
+
+    def show(done: int, total: int, label: str) -> None:
+        print(f"  [{done}/{total}] {label}", flush=True)
+
+    report = process_image_folder(
+        args.directory,
+        args.db,
+        workdir=args.workdir,
+        lang=args.lang,
+        psms=psms,
+        do_preprocess=not args.no_preprocess,
+        on_progress=None if args.quiet else show,
+    )
+    print()
+    print(report.summary())
+    print(f"\nIndex written to {Path(args.db).resolve()}")
+
+    if args.output:
+        with TessyIndex(args.db) as index:
+            docs = index.all_documents()
+        out = write_xlsx(docs, args.output)
+        print(f"Spreadsheet written to {out.resolve()}")
+
     return 1 if report.failures and report.indexed == 0 else 0
 
 
@@ -263,10 +328,19 @@ EXPORT_COLUMNS = (
 
 
 def cmd_export(args: argparse.Namespace) -> int:
+    from .export_sheet import write_xlsx
     from .index import TessyIndex
 
     with TessyIndex(args.db) as index:
         docs = index.all_documents()
+
+    if args.format == "xlsx":
+        if args.output == "-":
+            print("xlsx export needs -o PATH", file=sys.stderr)
+            return 2
+        write_xlsx(docs, args.output)
+        print(f"Wrote {len(docs)} row(s) to {args.output}", file=sys.stderr)
+        return 0
 
     to_stdout = args.output == "-"
     with contextlib.ExitStack() as stack:
@@ -279,12 +353,13 @@ def cmd_export(args: argparse.Namespace) -> int:
             json.dump(docs, stream, indent=2, default=str)
             stream.write("\n")
         else:
+            # Keep the legacy narrow CSV columns for callers that already parse them.
             writer = csv.DictWriter(stream, fieldnames=list(EXPORT_COLUMNS), extrasaction="ignore")
             writer.writeheader()
             for doc in docs:
                 writer.writerow({k: doc.get(k) for k in EXPORT_COLUMNS})
 
-    if not to_stdout:
+    if not to_stdout and args.format != "xlsx":
         print(f"Wrote {len(docs)} row(s) to {args.output}", file=sys.stderr)
     return 0
 

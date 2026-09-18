@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ocr import DEFAULT_LANG, DEFAULT_PSMS
-from ..pipeline import ProcessReport, process_spreadsheet
+from ..pipeline import ProcessReport, process_image_folder, process_spreadsheet
 
 
 @dataclass
@@ -53,7 +53,7 @@ Event = Progress | Finished | Failed
 
 
 class IngestJob:
-    """One spreadsheet ingest, running on its own thread.
+    """One ingest run (spreadsheet or DL-image folder) on its own thread.
 
     The UI calls :meth:`start`, then polls :meth:`drain` on a timer and reacts to
     whatever events came back. :meth:`cancel` asks the pipeline to stop between
@@ -62,7 +62,7 @@ class IngestJob:
 
     def __init__(
         self,
-        spreadsheet: str | Path,
+        source: str | Path,
         db_path: str | Path,
         *,
         workdir: str | Path | None = None,
@@ -71,19 +71,28 @@ class IngestJob:
         lang: str = DEFAULT_LANG,
         psms: tuple[int, ...] = DEFAULT_PSMS,
         do_preprocess: bool = True,
-        runner: Callable[..., ProcessReport] = process_spreadsheet,
+        mode: str = "spreadsheet",
+        runner: Callable[..., ProcessReport] | None = None,
     ):
-        self.spreadsheet = Path(spreadsheet)
+        self.source = Path(source)
+        # Kept for older tests / callers that still say ``job.spreadsheet``.
+        self.spreadsheet = self.source
         self.db_path = Path(db_path)
+        self.mode = mode
         self.options: dict[str, Any] = {
             "workdir": workdir,
-            "sheet": sheet,
-            "header_row": header_row,
             "lang": lang,
             "psms": psms,
             "do_preprocess": do_preprocess,
         }
-        self._runner = runner
+        if mode == "spreadsheet":
+            self.options["sheet"] = sheet
+            self.options["header_row"] = header_row
+            self._runner = runner or process_spreadsheet
+        elif mode == "folder":
+            self._runner = runner or process_image_folder
+        else:
+            raise ValueError(f"unknown ingest mode: {mode!r}")
         self._events: queue.Queue[Event] = queue.Queue()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
@@ -126,7 +135,7 @@ class IngestJob:
     def _run(self) -> None:
         try:
             report = self._runner(
-                self.spreadsheet,
+                self.source,
                 self.db_path,
                 on_progress=lambda done, total, label: self._events.put(
                     Progress(done, total, label)
